@@ -1,3 +1,4 @@
+#EXTRA_CFLAGS += -DDEBUG
 obj-m  := snd-soc-nau8824.o
 obj-m  += snd-soc-sst-cht-bsw-nau8824.o
 obj-m  += snd-intel-sst-acpi.o

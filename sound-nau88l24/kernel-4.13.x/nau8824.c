@@ -295,6 +295,58 @@ static bool nau8824_volatile_reg(struct device *dev, unsigned int reg)
 	}
 }
 
+static int nau8824_reg_write(void *context, unsigned int reg,
+			      unsigned int value)
+{
+	struct i2c_client *client = context;
+	u8 buf[4];
+	int ret;
+
+	buf[0] = (reg >> 8) & 0xff;
+	buf[1] = reg & 0xff;
+	buf[2] = (value >> 8) & 0xff;
+	buf[3] = value & 0xff;
+
+	ret = i2c_master_send(client, buf, sizeof(buf));
+	if (ret == sizeof(buf)) {
+		dev_info(&client->dev, "%x <= %x\n", reg, value);
+		return 0;
+	} else if (ret < 0)
+		return ret;
+	else
+		return -EIO;
+}
+
+static int nau8824_reg_read(void *context, unsigned int reg,
+			     unsigned int *value)
+{
+	struct i2c_client *client = context;
+	struct i2c_msg xfer[2];
+	u16 reg_buf, val_buf;
+	int ret;
+
+	reg_buf = cpu_to_be16(reg);
+	xfer[0].addr = client->addr;
+	xfer[0].len = sizeof(reg_buf);
+	xfer[0].buf = (u8 *)&reg_buf;
+	xfer[0].flags = 0;
+
+	xfer[1].addr = client->addr;
+	xfer[1].len = sizeof(val_buf);
+	xfer[1].buf = (u8 *)&val_buf;
+	xfer[1].flags = I2C_M_RD;
+
+	ret = i2c_transfer(client->adapter, xfer, ARRAY_SIZE(xfer));
+	if (ret < 0)
+		return ret;
+	else if (ret != ARRAY_SIZE(xfer))
+		return -EIO;
+
+	*value = be16_to_cpu(val_buf);
+
+	return 0;
+}
+
 static const char * const nau8824_companding[] = {
 	"Off", "NC", "u-law", "A-law" };
 
@@ -409,6 +461,11 @@ static const struct snd_kcontrol_new nau8824_snd_controls[] = {
 
 	SOC_SINGLE("DACL LR Mix", NAU8824_REG_DAC_MUTE_CTRL, 0, 1, 0),
 	SOC_SINGLE("DACR LR Mix", NAU8824_REG_DAC_MUTE_CTRL, 1, 1, 0),
+
+	SOC_SINGLE("THD for key media", NAU8824_REG_VDET_THRESHOLD_1, 8, 0xff, 0),
+	SOC_SINGLE("THD for key voice command", NAU8824_REG_VDET_THRESHOLD_1, 0, 0xff, 0),
+	SOC_SINGLE("THD for key volume up", NAU8824_REG_VDET_THRESHOLD_2, 8, 0xff, 0),
+	SOC_SINGLE("THD for key volume down", NAU8824_REG_VDET_THRESHOLD_2, 0, 0xff, 0),
 };
 
 static int nau8824_output_dac_event(struct snd_soc_dapm_widget *w,
@@ -485,14 +542,16 @@ static int nau8824_pump_event(struct snd_soc_dapm_widget *w,
 }
 
 static int system_clock_control(struct snd_soc_dapm_widget *w,
-		struct snd_kcontrol *k, int  event)
+	struct snd_kcontrol *k, int  event)
 {
 	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
 	struct nau8824 *nau8824 = snd_soc_codec_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = nau8824->dapm;
+	struct regmap *regmap = nau8824->regmap;
+	unsigned int value;
+	bool clk_fll, error;
 
-	if (dapm->bias_level < SND_SOC_BIAS_PREPARE &&
-		SND_SOC_DAPM_EVENT_OFF(event)) {
+	if (SND_SOC_DAPM_EVENT_OFF(event)) {
+		dev_info(nau8824->dev, "system clock control : POWER OFF\n");
 		/* Set clock source to disable or internal clock before the
 		 * playback or capture end. Codec needs clock for Jack
 		 * detection and button press if jack inserted; otherwise,
@@ -504,7 +563,40 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 		} else {
 			nau8824_config_sysclk(nau8824, NAU8824_CLK_DIS, 0);
 		}
+	} else {
+		dev_info(nau8824->dev, "system clock control : POWER ON\n");
+		/* Check the clock source setting is proper or not
+		 * no matter the source is from FLL or MCLK.
+		 */
+		regmap_read(regmap, NAU8824_REG_FLL1, &value);
+		clk_fll = value & NAU8824_FLL_RATIO_MASK;
+		/* It's error to use internal clock when playback */
+		regmap_read(regmap, NAU8824_REG_FLL6, &value);
+		error = value & NAU8824_DCO_EN;
+		if (!error) {
+			/* Check error depending on source is FLL or MCLK. */
+			regmap_read(regmap, NAU8824_REG_CLK_DIVIDER, &value);
+			if (clk_fll)
+				error = !(value & NAU8824_CLK_SRC_VCO);
+			else
+				error = value & NAU8824_CLK_SRC_VCO;
+		}
+		/* Recover the clock source setting if error. */
+		if (error) {
+			if (clk_fll) {
+				regmap_update_bits(regmap,
+					NAU8824_REG_FLL6, NAU8824_DCO_EN, 0);
+				regmap_update_bits(regmap,
+					NAU8824_REG_CLK_DIVIDER,
+					NAU8824_CLK_SRC_MASK,
+					NAU8824_CLK_SRC_VCO);
+			} else {
+				nau8824_config_sysclk(nau8824,
+					NAU8824_CLK_MCLK, 0);
+			}
+		}
 	}
+
 	return 0;
 }
 
@@ -593,7 +685,8 @@ static const struct snd_kcontrol_new nau8824_dacr_mux =
 
 static const struct snd_soc_dapm_widget nau8824_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("System Clock", SND_SOC_NOPM, 0, 0,
-			system_clock_control, SND_SOC_DAPM_POST_PMD),
+		system_clock_control, SND_SOC_DAPM_POST_PMD |
+		SND_SOC_DAPM_POST_PMU),
 
 	SND_SOC_DAPM_INPUT("HSMIC1"),
 	SND_SOC_DAPM_INPUT("HSMIC2"),
@@ -1533,6 +1626,8 @@ static const struct regmap_config nau8824_regmap_config = {
 	.readable_reg = nau8824_readable_reg,
 	.writeable_reg = nau8824_writeable_reg,
 	.volatile_reg = nau8824_volatile_reg,
+	.reg_read = nau8824_reg_read,
+	.reg_write = nau8824_reg_write,
 
 	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = nau8824_reg_defaults,
@@ -1819,7 +1914,8 @@ static int nau8824_i2c_probe(struct i2c_client *i2c,
 	}
 	i2c_set_clientdata(i2c, nau8824);
 
-	nau8824->regmap = devm_regmap_init_i2c(i2c, &nau8824_regmap_config);
+	nau8824->regmap = devm_regmap_init(dev, NULL,
+				i2c, &nau8824_regmap_config);
 	if (IS_ERR(nau8824->regmap))
 		return PTR_ERR(nau8824->regmap);
 	nau8824->dev = dev;

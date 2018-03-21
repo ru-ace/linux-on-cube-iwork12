@@ -309,7 +309,7 @@ static int nau8824_reg_write(void *context, unsigned int reg,
 
 	ret = i2c_master_send(client, buf, sizeof(buf));
 	if (ret == sizeof(buf)) {
-		dev_info(&client->dev, "%x <= %x\n", reg, value);
+		dev_dbg(&client->dev, "%x <= %x\n", reg, value);
 		return 0;
 	} else if (ret < 0)
 		return ret;
@@ -551,7 +551,7 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 	bool clk_fll, error;
 
 	if (SND_SOC_DAPM_EVENT_OFF(event)) {
-		dev_info(nau8824->dev, "system clock control : POWER OFF\n");
+		dev_dbg(nau8824->dev, "system clock control : POWER OFF\n");
 		/* Set clock source to disable or internal clock before the
 		 * playback or capture end. Codec needs clock for Jack
 		 * detection and button press if jack inserted; otherwise,
@@ -564,7 +564,7 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 			nau8824_config_sysclk(nau8824, NAU8824_CLK_DIS, 0);
 		}
 	} else {
-		dev_info(nau8824->dev, "system clock control : POWER ON\n");
+		dev_dbg(nau8824->dev, "system clock control : POWER ON\n");
 		/* Check the clock source setting is proper or not
 		 * no matter the source is from FLL or MCLK.
 		 */

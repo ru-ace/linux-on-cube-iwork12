@@ -27,3 +27,11 @@ based on Makefile & Kbuild from https://github.com/joequant/nau8824/tree/master/
 https://github.com/lwfinger/rtl8723bs_bt
 
 deb file from http://www.linuxium.com.au/how-tos 
+
+### KDE Auto-rotate
+
+https://github.com/donbowman/kde-auto-rotate
+
+### K380 keyboard 
+
+https://github.com/jergusg/k380-function-keys-conf
